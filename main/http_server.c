@@ -755,7 +755,7 @@ void http_server_start(void) {
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
 	    httpd_register_uri_handler(server, &uris[i]);
 
-    ESP_LOGI(TAG, "Server HTTP avviato su http://<IP>/monitor / /data /update /settings");
+    ESP_LOGI(TAG, "Server HTTP avviato su http://<IP>/ (monitor) /data /settings /update /wifi");
 }
 
 void http_server_stop(void) {
