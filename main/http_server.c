@@ -505,7 +505,7 @@ static esp_err_t factory_reset_handler(httpd_req_t *req) {
 }
 
 // GET /
-static esp_err_t get_handler(httpd_req_t *req) {
+static esp_err_t wifi_handler(httpd_req_t *req) {
     if (!check_auth(req)) return ESP_OK;
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, HTML_PAGE, -1);
@@ -741,9 +741,9 @@ void http_server_start(void) {
     }
 
     httpd_uri_t uris[] = {
-		{ .uri="/",            .method=HTTP_GET,  .handler=get_handler      },
+		{ .uri="/",            .method=HTTP_GET,  .handler=monitor_handler      },
+		{ .uri="/wifi",        .method=HTTP_GET,  .handler=wifi_handler      },
 	    { .uri="/save",        .method=HTTP_POST, .handler=post_handler     },
-	    { .uri="/monitor",     .method=HTTP_GET,  .handler=monitor_handler  },
 	    { .uri="/data",        .method=HTTP_GET,  .handler=data_handler     },
 	    { .uri="/favicon.ico", .method=HTTP_GET,  .handler=favicon_handler  },
 	    { .uri="/update",      .method=HTTP_GET,  .handler=ota_page_handler },
