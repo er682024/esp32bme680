@@ -127,20 +127,29 @@ static esp_err_t favicon_handler(httpd_req_t *req) {
 
 // ─── GET /data  (JSON) ────────────────────────────────────────────────────────
 static esp_err_t data_handler(httpd_req_t *req) {
+	// Legge RSSI del segnale WiFi in modalità STA
+    int8_t rssi = 0;
+    wifi_ap_record_t ap_info;
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        rssi = ap_info.rssi;
+    }
+
     // if (!check_token(req)) return ESP_OK;
-    char json[256];
+    char json[300];
     snprintf(json, sizeof(json),
         "{\"time\":\"%s\","
         "\"temperature\":%.2f,"
         "\"humidity\":%.2f,"
         "\"pressure\":%.2f,"
-        "\"gas\":%u}",
-        s_time, s_temp, s_hum, s_pres, (unsigned)s_gas);
+        "\"gas\":%u}"
+		"\"rssi\":%d}",
+        s_time, s_temp, s_hum, s_pres, (unsigned)s_gas, (int)rssi);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_send(req, json, -1);
     return ESP_OK;
 }
+
 
 // ─── GET /monitor  (HTML dashboard) ──────────────────────────────────────────
 static const char *HTML_MONITOR =
@@ -166,6 +175,18 @@ static const char *HTML_MONITOR =
 "#hum   .value{color:#79c0ff}"
 "#pres  .value{color:#a5d6ff}"
 "#gas   .value{color:#7ee787}"
+/* WiFi card — occupa tutta la larghezza */
+"#wifi{grid-column:1/-1;flex-direction:row;justify-content:space-between;padding:1rem 1.4rem;gap:1rem}"
+"#wifi .left{display:flex;flex-direction:column;gap:0.3rem}"
+"#wifi .icon{font-size:1.6rem}"
+"#wifi .value{font-size:1.5rem}"
+/* barre segnale */
+".bars{display:flex;align-items:flex-end;gap:3px;height:22px}"
+".bar{width:6px;border-radius:2px;background:#30363d;transition:background .4s}"
+".bar.lit-good{background:#3fb950}"
+".bar.lit-ok  {background:#d29922}"
+".bar.lit-poor{background:#f85149}"
+".rssi-label{font-size:0.72rem;color:#8b949e;margin-top:2px}"
 ".status{margin-top:1.5rem;font-size:0.75rem;color:#484f58}"
 "</style></head><body>"
 "<h1>&#x1F4E1; BME680 Monitor</h1>"
@@ -195,12 +216,47 @@ static const char *HTML_MONITOR =
 "    <span class='value' id='v-gas'>----</span>"
 "    <span class='unit'>&Omega;</span>"
 "  </div>"
+/* card WiFi a larghezza piena */
+"  <div class='card' id='wifi'>"
+"    <div class='left'>"
+"      <span class='label'>Segnale WiFi</span>"
+"      <span class='value' id='v-rssi'>---</span>"
+"      <span class='unit'>dBm &nbsp;<span id='v-quality'>--</span></span>"
+"    </div>"
+"    <div style='display:flex;flex-direction:column;align-items:center;gap:4px'>"
+"      <div class='bars' id='bars'>"
+"        <div class='bar' id='b1' style='height:5px'></div>"
+"        <div class='bar' id='b2' style='height:9px'></div>"
+"        <div class='bar' id='b3' style='height:13px'></div>"
+"        <div class='bar' id='b4' style='height:18px'></div>"
+"        <div class='bar' id='b5' style='height:22px'></div>"
+"      </div>"
+"      <div class='rssi-label' id='v-rssi-label'>in attesa...</div>"
+"    </div>"
+"  </div>"
 "</div>"
 "<div class='status' id='status'>Connessione...</div>"
 "<script>"
+"function updateWifi(rssi) {"
+"  document.getElementById('v-rssi').textContent = rssi;"
+/* Qualità testuale */
+"  let quality, cls, label;"
+"  if      (rssi >= -55) { quality='Ottimo';  cls='lit-good'; label='Ottimo'; }"
+"  else if (rssi >= -67) { quality='Buono';   cls='lit-good'; label='Buono'; }"
+"  else if (rssi >= -78) { quality='Discreto';cls='lit-ok';   label='Discreto'; }"
+"  else                  { quality='Scarso';  cls='lit-poor'; label='Scarso'; }"
+"  document.getElementById('v-quality').textContent = quality;"
+"  document.getElementById('v-rssi-label').textContent = label;"
+/* Numero di barre accese: 5 soglie */
+"  const lit = rssi >= -55 ? 5 : rssi >= -67 ? 4 : rssi >= -75 ? 3 : rssi >= -85 ? 2 : 1;"
+"  for (let i = 1; i <= 5; i++) {"
+"    const b = document.getElementById('b' + i);"
+"    b.className = 'bar' + (i <= lit ? ' ' + cls : '');"
+"  }"
+"}"
 "async function fetchData() {"
 "  try {"
-"    const r = await fetch('/data');" // ?token=esp32admin');"
+"    const r = await fetch('/data');"
 "    if (!r.ok) { document.getElementById('status').textContent = 'Errore auth'; return; }"
 "    const d = await r.json();"
 "    document.getElementById('clock').textContent   = d.time;"
@@ -208,6 +264,7 @@ static const char *HTML_MONITOR =
 "    document.getElementById('v-hum').textContent   = d.humidity.toFixed(1);"
 "    document.getElementById('v-pres').textContent  = d.pressure.toFixed(1);"
 "    document.getElementById('v-gas').textContent   = d.gas;"
+"    if (d.rssi !== undefined) updateWifi(d.rssi);"
 "    document.getElementById('status').textContent  = 'Aggiornato: ' + new Date().toLocaleTimeString();"
 "  } catch(e) {"
 "    document.getElementById('status').textContent = 'Errore connessione';"
