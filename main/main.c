@@ -66,6 +66,13 @@ void app_main(void)
             char time_str[32];
             get_time_str(time_str, sizeof(time_str));
             
+            // Legge RSSI WiFi (valido solo in modalità STA)
+            int8_t rssi = 0;
+            wifi_ap_record_t ap_info;
+            if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+                rssi = ap_info.rssi;
+            }
+            
             http_server_update_data(         // ← aggiorna i dati per la pagina
             (float)data.temperature,
             (float)data.humidity,
@@ -74,12 +81,13 @@ void app_main(void)
             time_str);
             
             ESP_LOGI(TAG,
-                "[%s] T=%.2f°C  H=%.2f%%  P=%.2f hPa  Gas=%u ohm",
+                "[%s] T=%.2f°C  H=%.2f%%  P=%.2f hPa  Gas=%u ohm  WiFi=%d dBm",
                 time_str,
                 (float)data.temperature,
                 (float)data.humidity,
                 (float)(data.pressure / 100.0),
-                (unsigned)data.gas_resistance);
+                (unsigned)data.gas_resistance,
+                (int)rssi);
         }
         vTaskDelay(2000 / portTICK_PERIOD_MS);
     }
