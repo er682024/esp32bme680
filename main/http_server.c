@@ -17,9 +17,37 @@
 
 #define TAG         "HTTP"
 #define ADMIN_USER  "admin"
-#define ADMIN_PASS  "esp32admin"   // ← cambia questa password
+#define ADMIN_PASS_DEFAULT "esp32admin"   // password usata se non impostata in NVS
+#define NVS_NS_AUTH      "auth_cfg"
+#define NVS_KEY_PASS     "admin_pass"
 
 static httpd_handle_t server = NULL;
+
+// Legge la password admin da NVS; se assente usa il default.
+static void load_admin_pass(char *buf, size_t len) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NS_AUTH, NVS_READONLY, &nvs) == ESP_OK) {
+        if (nvs_get_str(nvs, NVS_KEY_PASS, buf, &len) == ESP_OK) {
+            nvs_close(nvs);
+            return;
+        }
+        nvs_close(nvs);
+    }
+    // Fallback al default di fabbrica
+    strncpy(buf, ADMIN_PASS_DEFAULT, len - 1);
+    buf[len - 1] = '\0';
+}
+
+// Salva la nuova password admin in NVS.
+static esp_err_t save_admin_pass(const char *new_pass) {
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NS_AUTH, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(nvs, NVS_KEY_PASS, new_pass);
+    if (err == ESP_OK) err = nvs_commit(nvs);
+    nvs_close(nvs);
+    return err;
+}
 
 // Dati condivisi
 static float   s_temp = 0, s_hum = 0, s_pres = 0;
@@ -58,6 +86,10 @@ static bool check_auth(httpd_req_t *req) {
     mbedtls_base64_decode(decoded, sizeof(decoded), &decoded_len,
                           (unsigned char *)encoded, strlen(encoded));
     decoded[decoded_len] = '\0';
+
+	// Legge la password corrente da NVS (o usa il default)
+    char current_pass[64];
+    load_admin_pass(current_pass, sizeof(current_pass));
 
     char expected[64];
     snprintf(expected, sizeof(expected), "%s:%s", ADMIN_USER, ADMIN_PASS);
@@ -242,6 +274,178 @@ static const char *HTML_OK =
     "<div class='box'><h2>&#x2705; Salvato!</h2>"
     "<p>L'ESP32 si riavvierà e tenterà la connessione.</p></div>"
     "</body></html>";
+
+// ─── GET /settings  (cambio password + reset di fabbrica) ────────────────────
+static const char *HTML_SETTINGS =
+"<!DOCTYPE html><html lang='it'><head>"
+"<meta charset='utf-8'>"
+"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+"<title>ESP32 Impostazioni</title>"
+"<style>"
+"*{box-sizing:border-box;margin:0;padding:0}"
+"body{font-family:'Segoe UI',sans-serif;background:#0d1117;color:#e6edf3;"
+"display:flex;flex-direction:column;align-items:center;padding:2rem;min-height:100vh}"
+"h1{font-size:1.2rem;color:#58a6ff;letter-spacing:2px;text-transform:uppercase;margin-bottom:2rem}"
+".card{background:#161b22;border:1px solid #30363d;border-radius:14px;"
+"padding:1.6rem;width:100%;max-width:420px;margin-bottom:1.2rem}"
+".card h2{font-size:0.85rem;color:#8b949e;text-transform:uppercase;letter-spacing:1px;margin-bottom:1.2rem}"
+"label{display:block;font-size:0.8rem;color:#8b949e;margin-bottom:0.3rem;margin-top:0.8rem}"
+"input[type=password]{"
+"width:100%;padding:10px 12px;background:#0d1117;border:1px solid #30363d;"
+"border-radius:8px;color:#e6edf3;font-size:0.9rem;outline:none;transition:border-color .2s}"
+"input[type=password]:focus{border-color:#58a6ff}"
+".btn{display:block;width:100%;padding:11px;border:none;border-radius:8px;"
+"font-size:0.9rem;cursor:pointer;margin-top:1rem;transition:opacity .2s}"
+".btn:hover{opacity:.85}"
+".btn-blue{background:#1f6feb;color:#fff}"
+".btn-red{background:#b91c1c;color:#fff}"
+"#msg-pw,#msg-rst{font-size:0.8rem;margin-top:0.8rem;min-height:1.2em;text-align:center}"
+".ok{color:#3fb950}.err{color:#f85149}"
+".divider{border:none;border-top:1px solid #21262d;margin:0.4rem 0}"
+".warn-box{background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.3);"
+"border-radius:8px;padding:0.9rem 1rem;font-size:0.8rem;color:#f85149;margin-bottom:1rem;line-height:1.5}"
+".nav{font-size:0.8rem;margin-bottom:1.5rem}"
+".nav a{color:#58a6ff;text-decoration:none}"
+"</style></head><body>"
+"<h1>&#x2699;&#xFE0F; Impostazioni</h1>"
+"<div class='nav'><a href='/monitor'>&#x2190; Monitor</a> &nbsp;|&nbsp; <a href='/update'>OTA Update</a></div>"
+
+/* ── Card cambio password ── */
+"<div class='card'>"
+"<h2>&#x1F512; Cambia Password Admin</h2>"
+"<label>Password attuale</label>"
+"<input type='password' id='cur-pw' autocomplete='current-password'>"
+"<label>Nuova password</label>"
+"<input type='password' id='new-pw' autocomplete='new-password'>"
+"<label>Conferma nuova password</label>"
+"<input type='password' id='cfm-pw' autocomplete='new-password'>"
+"<button class='btn btn-blue' onclick='changePw()'>&#x1F4BE; Salva password</button>"
+"<div id='msg-pw'></div>"
+"</div>"
+
+/* ── Card reset di fabbrica ── */
+"<div class='card'>"
+"<h2>&#x26A0;&#xFE0F; Reset di Fabbrica</h2>"
+"<div class='warn-box'>Questa operazione cancella le credenziali WiFi e la password admin.<br>"
+"Il dispositivo si riavvierà in modalità AP con le impostazioni predefinite.</div>"
+"<button class='btn btn-red' onclick='confirmReset()'>&#x1F504; Esegui Reset di Fabbrica</button>"
+"<div id='msg-rst'></div>"
+"</div>"
+
+"<script>"
+/* cambio password */
+"async function changePw() {"
+"  const cur = document.getElementById('cur-pw').value;"
+"  const np  = document.getElementById('new-pw').value;"
+"  const cf  = document.getElementById('cfm-pw').value;"
+"  const msg = document.getElementById('msg-pw');"
+"  if (!cur || !np) { msg.className='err'; msg.textContent='Compila tutti i campi.'; return; }"
+"  if (np !== cf)   { msg.className='err'; msg.textContent='Le password non coincidono.'; return; }"
+"  if (np.length < 8) { msg.className='err'; msg.textContent='Minimo 8 caratteri.'; return; }"
+"  const body = 'cur=' + encodeURIComponent(cur) + '&new=' + encodeURIComponent(np);"
+"  try {"
+"    const r = await fetch('/set-password', {"
+"      method:'POST',"
+"      headers:{'Content-Type':'application/x-www-form-urlencoded',"
+"               'Authorization':'Basic ' + btoa('admin:' + cur)},"
+"      body: body"
+"    });"
+"    if (r.ok) {"
+"      msg.className='ok'; msg.textContent='\\u2705 Password aggiornata. Riautenticati.';"
+"      document.getElementById('cur-pw').value='';"
+"      document.getElementById('new-pw').value='';"
+"      document.getElementById('cfm-pw').value='';"
+"    } else {"
+"      msg.className='err'; msg.textContent='\\u274C Credenziali errate o errore server.';"
+"    }"
+"  } catch(e) { msg.className='err'; msg.textContent='\\u274C Errore connessione.'; }"
+"}"
+/* reset di fabbrica */
+"function confirmReset() {"
+"  if (!confirm('Confermi il reset di fabbrica?\\nWiFi e password verranno cancellati.')) return;"
+"  const msg = document.getElementById('msg-rst');"
+"  fetch('/factory-reset', {method:'POST'})"
+"    .then(r => {"
+"      if (r.ok) { msg.className='ok'; msg.textContent='\\u2705 Reset eseguito. Riavvio in corso...'; }"
+"      else      { msg.className='err'; msg.textContent='\\u274C Errore durante il reset.'; }"
+"    })"
+"    .catch(() => { msg.className='ok'; msg.textContent='Riavvio in corso...'; });"
+"}"
+"</script>"
+"</body></html>";
+
+static esp_err_t settings_handler(httpd_req_t *req) {
+    if (!check_auth(req)) return ESP_OK;
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, HTML_SETTINGS, -1);
+    return ESP_OK;
+}
+
+// ─── POST /set-password ───────────────────────────────────────────────────────
+static esp_err_t set_password_handler(httpd_req_t *req) {
+    // check_auth verifica la password CORRENTE (già nel body come header Basic)
+    if (!check_auth(req)) return ESP_OK;
+
+    char body[256] = {0};
+    int len = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (len <= 0) { httpd_resp_send_500(req); return ESP_FAIL; }
+    body[len] = '\0';
+
+    // Parsing "new=<valore>"
+    char new_pass[64] = {0};
+    char *p = strstr(body, "new=");
+    if (p) {
+        p += 4;
+        char *end = strchr(p, '&');
+        if (end) *end = '\0';
+        strncpy(new_pass, p, sizeof(new_pass) - 1);
+    }
+
+    if (strlen(new_pass) < 8) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "Password troppo corta (minimo 8 caratteri)", -1);
+        return ESP_OK;
+    }
+
+    esp_err_t err = save_admin_pass(new_pass);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Errore salvataggio password: %s", esp_err_to_name(err));
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Password admin aggiornata");
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
+// ─── POST /factory-reset ──────────────────────────────────────────────────────
+static esp_err_t factory_reset_handler(httpd_req_t *req) {
+    if (!check_auth(req)) return ESP_OK;
+
+    ESP_LOGW(TAG, "Reset di fabbrica richiesto — cancello WiFi e password admin");
+
+    // Cancella credenziali WiFi
+    nvs_handle_t nvs;
+    if (nvs_open("wifi_cfg", NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_erase_key(nvs, "ssid");
+        nvs_erase_key(nvs, "password");
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+
+    // Cancella password admin (tornerà al default ADMIN_PASS_DEFAULT)
+    if (nvs_open(NVS_NS_AUTH, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_erase_key(nvs, NVS_KEY_PASS);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+
+    httpd_resp_sendstr(req, "OK");
+    vTaskDelay(pdMS_TO_TICKS(800));
+    esp_restart();
+    return ESP_OK;
+}
 
 // GET /
 static esp_err_t get_handler(httpd_req_t *req) {
@@ -470,7 +674,7 @@ static esp_err_t ota_upload_handler(httpd_req_t *req) {
 void http_server_start(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.lru_purge_enable = true;
-    config.max_uri_handlers = 8;   // ← aumenta per i nuovi endpoint
+    config.max_uri_handlers = 11;
     config.recv_wait_timeout = 30;
     config.send_wait_timeout = 30;
     // config.max_req_hdr_len   = 1024;   // ← default è 512, raddoppia
@@ -480,18 +684,21 @@ void http_server_start(void) {
     }
 
     httpd_uri_t uris[] = {
-	    { .uri="/",            .method=HTTP_GET,  .handler=get_handler      },
+		{ .uri="/",            .method=HTTP_GET,  .handler=get_handler      },
 	    { .uri="/save",        .method=HTTP_POST, .handler=post_handler     },
 	    { .uri="/monitor",     .method=HTTP_GET,  .handler=monitor_handler  },
 	    { .uri="/data",        .method=HTTP_GET,  .handler=data_handler     },
 	    { .uri="/favicon.ico", .method=HTTP_GET,  .handler=favicon_handler  },
 	    { .uri="/update",      .method=HTTP_GET,  .handler=ota_page_handler },
 	    { .uri="/ota",         .method=HTTP_POST, .handler=ota_upload_handler},
+	    { .uri="/settings",      .method=HTTP_GET,  .handler=settings_handler     },
+        { .uri="/set-password",  .method=HTTP_POST, .handler=set_password_handler },
+        { .uri="/factory-reset", .method=HTTP_POST, .handler=factory_reset_handler},
     };
-    for (int i = 0; i < 7; i++)
+    for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
 	    httpd_register_uri_handler(server, &uris[i]);
 
-    ESP_LOGI(TAG, "Server HTTP avviato su http://<IP>/monitor / /data /update");
+    ESP_LOGI(TAG, "Server HTTP avviato su http://<IP>/monitor / /data /update /settings");
 }
 
 void http_server_stop(void) {
